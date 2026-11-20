@@ -16,8 +16,8 @@ silica hashlife --pattern gosper --exponent 100
 | Engine | How it works | Use it for |
 | --- | --- | --- |
 | `LifeGrid` | Double-buffered byte array, with any `B/S` rule | Clear reference behavior, and rules other than Conway's |
-| `BitLife` | 64 cells per machine word, with a bit-sliced adder for neighbor counts | Large, dense grids |
-| `HashLife` | Memoized, hash-consed quadtree on an unbounded plane | Repetitive patterns over enormous spans of time |
+| `BitLife` | 64 cells per machine word, with a bit-sliced adder for neighbor counts, and any `B/S` rule | Large, dense grids |
+| `HashLife` | Memoized, hash-consed quadtree on an unbounded plane, with any `B/S` rule except `B0` | Repetitive patterns over enormous spans of time |
 
 ```kotlin
 val life = HashLife()
@@ -28,6 +28,56 @@ println(life.exactPopulation) // 211275100038038233582783867604
 
 Populations past 64 bits are real here: a Gosper gun has about 2^97 cells after 2^100 generations.
 `population` saturates at `Long.MAX_VALUE`, and `exactPopulation` gives the true count.
+
+## Rules, RLE and Hashlife queries
+
+Since 0.2.0 every engine takes a life-like rule. `Rule.parse` reads `B36/S23` in either case and
+the older `S/B` form such as `23/36`, and `Rule.notation` prints the canonical form. `BitLife`
+keeps a dedicated path for Conway's rule and evaluates any other rule from a four-bit bit-sliced
+neighbor count. `HashLife` rejects `B0` rules, because under them the empty plane itself would
+come alive.
+
+`Rle.read` returns the cells together with the header's size and rule and the `#N` and `#C`
+lines. `Rle.write` produces canonical RLE: translated to the origin, blank rows merged into one
+`n$` token, lines wrapped at 70 characters. Reading is bounded (run lengths up to 1,000,000,
+coordinates up to 2^30, ten million live cells by default), so a hostile file fails with an
+error instead of exhausting memory.
+
+`HashLife` answers questions about patterns far beyond 64-bit coordinates. `advance(BigInteger)`
+takes any generation count, `boundingBox()` and `populationIn(...)` are exact at any size, and
+`cells()` and `toRle()` export the pattern while it still fits in 64-bit coordinates.
+
+```kotlin
+val life = HashLife(Rule.parse("B36/S23"))
+for ((x, y) in Rle.read(File("highlife.rle").readText()).cells) life[x.toLong(), y.toLong()] = true
+life.advance(BigInteger.TEN.pow(30))
+println(life.boundingBox())                      // Bounds(minX=-12, minY=-15, maxX=21, maxY=20)
+println(life.populationIn(-100, -100, 100, 100)) // 39
+println(life.toRle())
+```
+
+The command line exposes the same features. `--json` prints one JSON object. Hashlife
+generations and populations are JSON strings in it, since they routinely pass 2^53.
+
+```sh
+silica hashlife --pattern acorn --generations 5206 --json
+# {"command":"hashlife","rule":"B3/S23","generation":"5206","population":"633",...}
+silica hashlife --pattern diehard --generations 140 --every 20
+# generation 20: population 18 ... generation 140: population 0
+silica life --pattern acorn --rule B36/S23 --generations 100 --size 256 --out highlife.rle
+silica hashlife --rle highlife.rle --generations 1000000000000000000000000000000
+# rule: B36/S23 ... population: 39, bounding box: (-12, -15) to (21, 20)
+silica rle --pattern glider --rule 23/36
+# x = 3, y = 3, rule = B36/S23
+# bo$2bo$3o!
+silica bench --json
+```
+
+`--rule` overrides the rule named in an RLE file, which overrides Conway's. `--every N` samples
+the population every `N` generations, up to 10,000 samples. `bench` times one fixed workload per
+engine after an untimed warm-up, and `--quick` shrinks the workloads. Bad input exits with
+status 2 and a one-line message; a valid request that cannot be met, such as exporting a pattern
+that has spread past 64-bit coordinates, exits with status 1.
 
 ## Falling sand
 
@@ -64,6 +114,9 @@ app/build/install/silica/bin/silica view
 app/build/install/silica/bin/silica sand --frames 1000 --png world.png
 app/build/install/silica/bin/silica life --pattern gosper --generations 2000 --size 2048
 app/build/install/silica/bin/silica hashlife --pattern gosper --exponent 100
+app/build/install/silica/bin/silica hashlife --pattern acorn --generations 5206 --json
+app/build/install/silica/bin/silica rle --pattern glider --rule 23/36
+app/build/install/silica/bin/silica bench
 ```
 
 In the window, the mouse paints and the keys 0 to 9 pick a material.
@@ -83,6 +136,13 @@ The tests pin behavior against published facts and against independent implement
 - Sleeping and non-sleeping worlds are compared on every frame, with random scenes, several chunk
   sizes and painting mid-run.
 - Matter is checked for conservation on every frame.
+- `BitLife` is compared with `LifeGrid` under named and random rules, including `B0` rules, on
+  every edge mode and word-boundary width. `HashLife` is compared with `BitLife` under random rules
+  without `B0`. Day & Night is checked to commute with inverting every cell.
+- The acorn has to settle at generation 5206 with 633 cells, and diehard has to vanish at exactly
+  generation 130. A glider advanced by 4 * 2^40 generations has to move exactly 2^40 cells.
+- `populationIn`, `boundingBox` and `cells` are compared with direct scans of `BitLife`. RLE is
+  round-tripped on hundreds of random patterns and rules, and hostile files are checked to fail.
 - Known bugs were injected on purpose, such as a top-down scan, a missing wake on a neighboring chunk
   and a dropped border in Hashlife. Each made the suite fail. One that first survived led to a test
   that found a real bug, where a falling column smeared out.
@@ -94,6 +154,7 @@ Single runs on an Apple Silicon laptop.
 | Operation | Result |
 | --- | --- |
 | `BitLife`, 2048 x 2048, 2000 generations | About 2 * 10^10 cells per second, on one thread |
+| `BitLife`, 1024 x 1024, 500 generations of `B36/S23` | About 7 * 10^9 cells per second |
 | `HashLife`, Gosper gun, 2^100 generations | 16 milliseconds |
 | `SandWorld`, 512 x 288 demo scene, 700 frames | About 2500 frames per second |
 

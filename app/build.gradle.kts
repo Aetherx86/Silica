@@ -22,3 +22,13 @@ application {
     mainClass.set("dev.aetherx86.silica.app.MainKt")
     applicationName = "silica"
 }
+
+dependencies {
+    testImplementation(kotlin("test"))
+}
+
+tasks.test {
+    useJUnitPlatform()
+    // The commands render images, so keep AWT headless on every platform.
+    systemProperty("java.awt.headless", "true")
+}

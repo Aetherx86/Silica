@@ -1,11 +1,6 @@
 package dev.aetherx86.silica.app
 
-import dev.aetherx86.silica.BitLife
-import dev.aetherx86.silica.Edge
-import dev.aetherx86.silica.HashLife
 import dev.aetherx86.silica.Material
-import dev.aetherx86.silica.Patterns
-import dev.aetherx86.silica.Rle
 import dev.aetherx86.silica.SandWorld
 import java.awt.BorderLayout
 import java.awt.Color
@@ -16,8 +11,7 @@ import java.awt.event.KeyEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage
-import java.io.File
-import javax.imageio.ImageIO
+import java.io.PrintStream
 import javax.swing.JFrame
 import javax.swing.JLabel
 import javax.swing.JPanel
@@ -25,38 +19,25 @@ import javax.swing.SwingUtilities
 import javax.swing.Timer
 import kotlin.system.exitProcess
 
-private val USAGE = """
+internal val USAGE = """
     usage: silica <command> [options]
 
       view                                  open the interactive sand window
-      sand [--frames N] [--png FILE]        run a headless sand scene and report timing
-      life [--pattern NAME] [--generations N] [--size N] [--png FILE]
-                                            run bit-parallel Life
-      hashlife [--pattern NAME] [--exponent N]
-                                            advance by 2^N generations with Hashlife
+      sand [--frames N] [--png FILE] [--json]
+                                            run a headless sand scene and report timing
+      life [--pattern NAME | --rle FILE] [--rule RULE] [--generations N] [--size N]
+           [--edge torus|dead] [--png FILE] [--out FILE] [--json]
+                                            run bit-parallel Life under any B/S rule
+      hashlife [--pattern NAME | --rle FILE] [--rule RULE] [--exponent N | --generations N]
+               [--every N] [--out FILE] [--json]
+                                            advance with Hashlife by 2^N or by any count
+      rle [--pattern NAME | --rle FILE] [--rule RULE]
+                                            print a pattern as canonical RLE
+      bench [--quick] [--json]              time every engine on fixed workloads
 
-    patterns: glider, pulsar, gosper, rpentomino
+    patterns: glider, pulsar, gosper, rpentomino, acorn, diehard
+    rules: B3/S23 notation, or the older S/B form such as 23/36
 """.trimIndent()
-
-private fun options(args: List<String>): Map<String, String> {
-    val out = HashMap<String, String>()
-    var i = 0
-    while (i < args.size) {
-        val key = args[i]
-        require(key.startsWith("--") && i + 1 < args.size) { "expected --option value, got $key" }
-        out[key.removePrefix("--")] = args[i + 1]
-        i += 2
-    }
-    return out
-}
-
-private fun patternNamed(name: String): String = when (name) {
-    "glider" -> Patterns.GLIDER
-    "pulsar" -> Patterns.PULSAR
-    "gosper" -> Patterns.GOSPER_GUN
-    "rpentomino" -> Patterns.R_PENTOMINO
-    else -> throw IllegalArgumentException("unknown pattern: $name")
-}
 
 internal fun colorOf(type: Int, variation: Int): Int {
     val v = variation and 15
@@ -102,57 +83,6 @@ internal fun demoScene(world: SandWorld) {
     for (x in w / 3 + 10 until 2 * w / 3 - 10) for (y in h / 5 until h / 4) world.paint(x, y, Material.OIL)
     for (x in 2 * w / 3 + 8 until 5 * w / 6) for (y in h / 2 until h - 2) world.paint(x, y, Material.WOOD)
     for (x in 2 * w / 3 + 8 until 5 * w / 6) world.paint(x, h / 2 - 1, Material.FIRE)
-}
-
-private fun runSand(args: Map<String, String>) {
-    val frames = args["frames"]?.toInt() ?: 1000
-    val world = SandWorld(512, 288, seed = 1)
-    demoScene(world)
-    val started = System.nanoTime()
-    repeat(frames) { world.step() }
-    val elapsed = (System.nanoTime() - started) / 1e9
-    println("%d frames in %.3f s (%.0f frames/s)".format(frames, elapsed, frames / elapsed))
-    println("cells visited: %d of %d".format(world.totalCellsVisited, frames.toLong() * 512 * 288))
-    args["png"]?.let { path ->
-        val image = BufferedImage(world.width, world.height, BufferedImage.TYPE_INT_RGB)
-        render(world, image)
-        ImageIO.write(image, "png", File(path))
-        println("wrote $path")
-    }
-}
-
-private fun runLife(args: Map<String, String>) {
-    val size = args["size"]?.toInt() ?: 1024
-    val generations = args["generations"]?.toInt() ?: 2000
-    val grid = BitLife(size, size, Edge.TORUS)
-    for ((x, y) in Rle.parse(patternNamed(args["pattern"] ?: "gosper"))) {
-        grid[x + size / 4, y + size / 4] = true
-    }
-    val started = System.nanoTime()
-    repeat(generations) { grid.step() }
-    val elapsed = (System.nanoTime() - started) / 1e9
-    val cellsPerSecond = generations.toDouble() * size * size / elapsed
-    println("%d generations in %.3f s (%.2e cells/s)".format(generations, elapsed, cellsPerSecond))
-    println("population: ${grid.population()}")
-    args["png"]?.let { path ->
-        val image = BufferedImage(size, size, BufferedImage.TYPE_INT_RGB)
-        for (y in 0 until size) for (x in 0 until size) image.setRGB(x, y, if (grid[x, y]) 0xE8E8F0 else 0x0E0E14)
-        ImageIO.write(image, "png", File(path))
-        println("wrote $path")
-    }
-}
-
-private fun runHashLife(args: Map<String, String>) {
-    val exponent = args["exponent"]?.toInt() ?: 100
-    val hash = HashLife()
-    for ((x, y) in Rle.parse(patternNamed(args["pattern"] ?: "gosper"))) hash[x.toLong(), y.toLong()] = true
-    val started = System.nanoTime()
-    hash.advancePowerOfTwo(exponent)
-    val elapsed = (System.nanoTime() - started) / 1e9
-    println("advanced 2^$exponent generations in %.3f s".format(elapsed))
-    println("generation: ${hash.generation}")
-    println("population: ${hash.exactPopulation}")
-    println("distinct nodes: ${hash.nodeCount}")
 }
 
 private fun openWindow() {
@@ -212,25 +142,51 @@ private fun openWindow() {
     }.start()
 }
 
-fun main(args: Array<String>) {
+/** Runs one command and returns its exit status, without exiting, so it can be tested. */
+internal fun run(args: List<String>, out: PrintStream, err: PrintStream): Int {
     if (args.isEmpty()) {
-        println(USAGE)
-        return
+        out.println(USAGE)
+        return 0
     }
-    try {
-        val rest = options(args.drop(1))
+    val rest = args.drop(1)
+    return try {
         when (args[0]) {
-            "view" -> SwingUtilities.invokeLater { openWindow() }
-            "sand" -> runSand(rest)
-            "life" -> runLife(rest)
-            "hashlife" -> runHashLife(rest)
+            "view" -> {
+                Options.parse(rest, emptySet())
+                SwingUtilities.invokeLater { openWindow() }
+            }
+            "sand" -> runSand(Options.parse(rest, setOf("frames", "png"), setOf("json")), out)
+            "life" -> runLife(
+                Options.parse(rest, setOf("pattern", "rle", "rule", "generations", "size", "edge", "png", "out"), setOf("json")),
+                out,
+            )
+            "hashlife" -> runHashLife(
+                Options.parse(rest, setOf("pattern", "rle", "rule", "exponent", "generations", "every", "out"), setOf("json")),
+                out,
+            )
+            "rle" -> runRle(Options.parse(rest, setOf("pattern", "rle", "rule")), out)
+            "bench" -> runBench(Options.parse(rest, emptySet(), setOf("json", "quick")), out)
+            "help", "--help", "-h" -> out.println(USAGE)
             else -> {
-                println(USAGE)
-                exitProcess(2)
+                err.println(USAGE)
+                return 2
             }
         }
+        0
     } catch (e: IllegalArgumentException) {
-        System.err.println("error: ${e.message}")
-        exitProcess(2)
+        err.println("error: ${e.message}")
+        2
+    } catch (e: IllegalStateException) {
+        err.println("error: ${e.message}")
+        1
+    } catch (e: java.io.IOException) {
+        err.println("error: ${e.message}")
+        1
     }
+}
+
+fun main(args: Array<String>) {
+    val status = run(args.toList(), System.out, System.err)
+    System.out.flush()
+    if (status != 0) exitProcess(status)
 }
